@@ -12,9 +12,9 @@ class DailyAssistantTests(unittest.TestCase):
     def test_document_classification(self):
         self.assertEqual(classify_document("دادنامه.pdf", ""), "court_decision")
         self.assertEqual(classify_document("scan.pdf", "ابلاغیه وقت رسیدگی"), "court_notice")
-        self.assertEqual(classify_document("متن.txt", "دادخواست مطالبه وجه"), "court_decision")
+        self.assertEqual(classify_document("متن.txt", "دادخواست مطالبه وجه"), "pleading")
 
-    def test_scan_is_incremental_and_deduplicated(self):
+    def test_scan_is_incremental(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp) / "docs"
             root.mkdir()
