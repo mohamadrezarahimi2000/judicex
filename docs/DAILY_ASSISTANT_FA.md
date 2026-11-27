@@ -1,24 +1,82 @@
-# دستیار روزانه Judicex (نسخه نخست)
+# دستیار روزانه Judicex — نسخه توسعه‌یافته
 
-این ماژول اسکن افزایشی پوشه‌های انتخاب‌شده، استخراج متن و گزارش مواعد ثبت‌شده در پرونده‌ها را فراهم می‌کند.
+این ماژول امکانات اسکن افزایشی، دسته‌بندی مقدماتی، استخراج نشانگرهای حقوقی، گزارش موعدها و خروجی‌گیری را فراهم می‌کند.
+
+## ۲۶ گزینه عملیاتی
+
+| گزینه | کارکرد |
+|---|---|
+| scan | اسکن پوشه‌های گوشی |
+| report | گزارش روزانه |
+| all | گزارش جامع |
+| stats | آمار اسناد بر اساس نوع |
+| decisions | فهرست آرای قضایی |
+| notices | فهرست ابلاغیه‌ها |
+| pleadings | فهرست لوایح و دادخواست‌ها |
+| search | جست‌وجوی متن اسناد |
+| case_numbers | استخراج الگوهای شماره پرونده |
+| dates | استخراج تاریخ‌ها |
+| articles | استخراج ارجاع مواد قانونی |
+| amounts | استخراج مبالغ |
+| deadlines | شناسایی عبارت‌های مرتبط با مهلت |
+| parties | استخراج خطوط حاوی طرفین |
+| insights | تحلیل ساختاری یک‌جا |
+| duplicates | شناسایی فایل‌های تکراری |
+| today | کارهای سررسید امروز |
+| overdue | کارهای عقب‌افتاده |
+| upcoming | موعدهای آینده |
+| images | فهرست تصاویر |
+| pdfs | فهرست PDFها |
+| ocr | فهرست اسناد OCRشده |
+| export_json | خروجی JSON |
+| export_csv | خروجی CSV |
+| health | بررسی سلامت ابزارها |
+| help | فهرست امکانات |
 
 ## اجرا در Termux
 
-از داخل پوشه مخزن:
+ابتدا پوشه‌های موردنظر را اسکن کن:
 
 ```bash
-.venv/bin/python -m judicex_memory_os.daily_assistant --db "$HOME/judicex-data/rahimi.db" --scan "$HOME/storage/shared/Download" --scan "$HOME/storage/shared/Documents" --horizon 7
+cd ~/judicex
+.venv/bin/python -m judicex_memory_os.daily_assistant --db ~/judicex-data/rahimi.db --scan ~/storage/shared/Download --scan ~/storage/shared/Documents
 ```
 
-برای اجرای روزانه ساعت ۷:۳۰ با Termux:API و cron، پس از نصب بسته `cronie` و تنظیم مسیرهای دلخواه:
+نمایش همه گزینه‌ها:
 
 ```bash
-crond
-(crontab -l 2>/dev/null; echo '30 7 * * * cd $HOME/judicex && .venv/bin/python -m judicex_memory_os.daily_assistant --db $HOME/judicex-data/rahimi.db --scan $HOME/storage/shared/Download --scan $HOME/storage/shared/Documents --horizon 7 >> $HOME/judicex-data/daily-report.json 2>&1') | crontab -
+.venv/bin/python -m judicex_memory_os.daily_assistant --db ~/judicex-data/rahimi.db --list-options
 ```
 
-اسکنر فایل‌های تکراری را با SHA-256 نادیده می‌گیرد و تغییرات بعدی را دوباره پردازش می‌کند. PDF متنی، DOCX، متن ساده و تصاویر/PDF اسکن‌شده (در صورت نصب Tesseract و Poppler) پشتیبانی می‌شوند. فایل‌ها به پرونده‌ای الصاق نمی‌شوند و محتوای استخراج‌شده در جدول محلی `daily_scan_files` نگهداری می‌شود.
+گزارش جامع:
 
-## حدود نسخه نخست
+```bash
+.venv/bin/python -m judicex_memory_os.daily_assistant --db ~/judicex-data/rahimi.db --action all
+```
 
-این نسخه تحلیلگر زبانی/آنلاین رأی نیست و مهلت قانونی را از متن سند محاسبه یا قطعی نمی‌کند. فقط موعدهایی را گزارش می‌کند که قبلاً در وظایف Judicex ثبت شده‌اند. تحلیل حقوقی خودکار، تطبیق سند با پرونده، رابط داشبورد و اعلان واقعی اندروید در گام بعدی توسعه می‌یابند. اجرای زمان‌بندی‌شده در Termux نیازمند فعال بودن cron و محدود نبودن اجرای پس‌زمینه Termux توسط Android است.
+جست‌وجوی عبارت:
+
+```bash
+.venv/bin/python -m judicex_memory_os.daily_assistant --db ~/judicex-data/rahimi.db --action search --query "تجدیدنظرخواهی"
+```
+
+استخراج مواد قانونی:
+
+```bash
+.venv/bin/python -m judicex_memory_os.daily_assistant --db ~/judicex-data/rahimi.db --action articles
+```
+
+خروجی CSV:
+
+```bash
+.venv/bin/python -m judicex_memory_os.daily_assistant --db ~/judicex-data/rahimi.db --action export_csv --output ~/judicex-data/documents.csv
+```
+
+## محدودیت‌ها و ملاحظات حقوقی
+
+- این گزینه‌ها ابزارهای کمکی و استخراج الگو هستند؛ تشخیص رأی/ابلاغیه و استخراج شماره‌ها ممکن است خطا داشته باشد.
+- عبارت مهلت، به‌تنهایی مهلت قانونی قطعی نیست. تاریخ ابلاغ، نوع تصمیم، مقررات خاص و تعطیلات باید بررسی شوند.
+- این نسخه هنوز تحلیل حقوقی مولد و خودکار با مدل زبانی را به ماژول اسکن متصل نکرده است.
+- فایل‌ها فقط خوانده می‌شوند و در پرونده‌ای وارد یا حذف نمی‌شوند.
+- اجرای خودکار روزانه به تنظیم زمان‌بند Android/Termux نیاز دارد.
+- قبل از اتکا به خروجی، متن اصلی سند و صفحه مربوط کنترل شود.
