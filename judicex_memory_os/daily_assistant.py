@@ -145,16 +145,169 @@ def daily_report(db_path: str | Path, horizon_days: int = 7) -> dict[str, Any]:
             "counts": {"upcoming": len(upcoming), "recent_documents": len(docs)}}
 
 
+
+
+def _documents(db_path: str | Path) -> list[dict[str, Any]]:
+    conn = sqlite3.connect(str(db_path))
+    conn.row_factory = sqlite3.Row
+    try:
+        rows = conn.execute("SELECT * FROM daily_scan_files ORDER BY scanned_at DESC").fetchall()
+        return [dict(row) for row in rows]
+    except sqlite3.OperationalError:
+        return []
+    finally:
+        conn.close()
+
+
+def _matches(documents: list[dict[str, Any]], pattern: str) -> list[dict[str, Any]]:
+    needle = _normalize(pattern).casefold()
+    return [d for d in documents if needle in _normalize(d.get("path", "") + "\\n" + d.get("extracted_text", "")).casefold()]
+
+
+def _extract_values(text: str, pattern: str) -> list[str]:
+    return list(dict.fromkeys(m.group(0) for m in re.finditer(pattern, _normalize(text), re.I)))
+
+
+def document_insights(document: dict[str, Any]) -> dict[str, Any]:
+    text = document.get("extracted_text", "")
+    return {
+        "path": document.get("path"),
+        "category": document.get("category"),
+        "case_numbers": _extract_values(text, r"(?:پرونده\\s*(?:کلاسه)?|شماره\\s*پرونده)\\s*[:：]?\\s*[0-9۰-۹/.-]{5,}"),
+        "dates": _extract_values(text, r"(?<!\\d)(?:1[34][0-9]{2}|20[0-9]{2})[/.-](?:0?[1-9]|1[0-2])[/.-](?:0?[1-9]|[12][0-9]|3[01])(?!\\d)|(?<!\\d)(?:0?[1-9]|[12][0-9]|3[01])[/.-](?:0?[1-9]|1[0-2])[/.-](?:1[34][0-9]{2}|20[0-9]{2})(?!\\d)"),
+        "amounts": _extract_values(text, r"[0-9۰-۹][0-9۰-۹,.٬]*\\s*(?:ریال|تومان)"),
+        "legal_articles": _extract_values(text, r"ماده\\s*[0-9۰-۹]+(?:\\s*(?:و|تا)\\s*[0-9۰-۹]+)?"),
+        "deadline_mentions": [line.strip() for line in text.splitlines() if re.search(r"مهلت|ظرف\\s+\\d+\\s+روز|روز\\s+از\\s+تاریخ|تجدیدنظرخواهی|واخواهی|فرجام", line)],
+        "parties": [line.strip() for line in text.splitlines() if re.search(r"خواهان|خوانده|شاکی|متهم|محکوم\\s*له|محکوم\\s*علیه", line)],
+        "extractor": document.get("extractor"),
+    }
+
+
+def run_action(db_path: str | Path, action: str, query: str = "", output: str = "") -> dict[str, Any]:
+    docs = _documents(db_path)
+    if action == "scan":
+        raise ValueError("برای اسکن از گزینه --scan استفاده کنید.")
+    if action == "report":
+        return daily_report(db_path)
+    if action == "all":
+        return {"report": daily_report(db_path), "stats": run_action(db_path, "stats")}
+    if action == "stats":
+        counts: dict[str, int] = {}
+        for d in docs:
+            counts[d.get("category", "unknown")] = counts.get(d.get("category", "unknown"), 0) + 1
+        return {"total": len(docs), "by_category": counts, "ocr_count": sum("ocr" in d.get("extractor", "") for d in docs)}
+    if action in {"decisions", "notices", "pleadings", "images", "pdfs", "ocr"}:
+        category_map = {"decisions": "court_decision", "notices": "court_notice", "pleadings": "pleading"}
+        if action in category_map:
+            found = [d for d in docs if d.get("category") == category_map[action]]
+        elif action == "images":
+            found = [d for d in docs if Path(d.get("path", "")).suffix.lower() in {".png", ".jpg", ".jpeg", ".webp", ".tif", ".tiff"}]
+        elif action == "pdfs":
+            found = [d for d in docs if Path(d.get("path", "")).suffix.lower() == ".pdf"]
+        else:
+            found = [d for d in docs if "ocr" in d.get("extractor", "")]
+        return {"count": len(found), "documents": [{k: d.get(k) for k in ("path", "category", "extractor", "scanned_at")} for d in found]}
+    if action in {"search", "case_numbers", "dates", "articles", "amounts", "deadlines", "parties", "insights"}:
+        found = _matches(docs, query) if action == "search" and query else docs
+        insights = [document_insights(d) for d in found]
+        if action == "search":
+            return {"query": query, "count": len(found), "documents": [d["path"] for d in found]}
+        if action == "insights":
+            return {"count": len(insights), "items": insights}
+        key_map = {"case_numbers": "case_numbers", "dates": "dates", "articles": "legal_articles",
+                   "amounts": "amounts", "deadlines": "deadline_mentions", "parties": "parties"}
+        key = key_map[action]
+        return {"count": sum(len(i[key]) for i in insights),
+                "items": [{"path": i["path"], "values": i[key]} for i in insights if i[key]]}
+    if action == "duplicates":
+        groups: dict[str, list[str]] = {}
+        for d in docs:
+            groups.setdefault(d.get("sha256", ""), []).append(d.get("path", ""))
+        return {"groups": [v for k, v in groups.items() if k and len(v) > 1]}
+    if action in {"today", "overdue", "upcoming"}:
+        tasks = daily_report(db_path, 3650)["upcoming_tasks"]
+        if action == "today":
+            tasks = [t for t in tasks if t["days_remaining"] == 0]
+        elif action == "overdue":
+            tasks = [t for t in tasks if t["days_remaining"] < 0]
+        else:
+            tasks = [t for t in tasks if t["days_remaining"] > 0]
+        return {"count": len(tasks), "tasks": tasks}
+    if action == "export_json":
+        data = {"documents": docs, "report": daily_report(db_path, 3650)}
+        target = Path(output or "judicex-daily-export.json")
+        target.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
+        return {"exported": str(target), "documents": len(docs)}
+    if action == "export_csv":
+        import csv
+        target = Path(output or "judicex-documents.csv")
+        with target.open("w", encoding="utf-8-sig", newline="") as handle:
+            writer = csv.DictWriter(handle, fieldnames=["path", "category", "extractor", "size", "scanned_at", "sha256"])
+            writer.writeheader()
+            writer.writerows({k: d.get(k, "") for k in writer.fieldnames} for d in docs)
+        return {"exported": str(target), "documents": len(docs)}
+    if action == "health":
+        return {"database_exists": Path(db_path).exists(), "document_index": len(docs),
+                "tesseract": shutil.which("tesseract") or "", "pdftoppm": shutil.which("pdftoppm") or ""}
+    if action == "help":
+        return {"options": OPTIONS}
+    raise ValueError(f"گزینه ناشناخته: {action}")
+
+
+OPTIONS = [
+    {"id": "scan", "name": "اسکن پوشه‌های گوشی", "description": "شناسایی فایل‌های تازه و تغییرکرده"},
+    {"id": "report", "name": "گزارش روزانه", "description": "نمایش اسناد و موعدهای نزدیک"},
+    {"id": "all", "name": "گزارش جامع", "description": "ترکیب گزارش روزانه و آمار"},
+    {"id": "stats", "name": "آمار اسناد", "description": "تعداد و دسته‌بندی اسناد"},
+    {"id": "decisions", "name": "فهرست آرای قضایی", "description": "نمایش اسناد تشخیص‌داده‌شده به‌عنوان رأی"},
+    {"id": "notices", "name": "فهرست ابلاغیه‌ها", "description": "نمایش ابلاغیه‌ها و اخطاریه‌ها"},
+    {"id": "pleadings", "name": "فهرست لوایح و دادخواست‌ها", "description": "نمایش متون دفاعی و دادخواست‌ها"},
+    {"id": "search", "name": "جست‌وجوی متن اسناد", "description": "جست‌وجوی واژه در اسناد استخراج‌شده"},
+    {"id": "case_numbers", "name": "استخراج شماره پرونده", "description": "شناسایی الگوهای شماره پرونده"},
+    {"id": "dates", "name": "استخراج تاریخ‌ها", "description": "یافتن تاریخ‌های درج‌شده در سند"},
+    {"id": "articles", "name": "استخراج مواد قانونی", "description": "یافتن ارجاع‌های ماده قانونی"},
+    {"id": "amounts", "name": "استخراج مبالغ", "description": "یافتن مبالغ ریالی و تومانی"},
+    {"id": "deadlines", "name": "شناسایی عبارت‌های مهلت", "description": "یافتن اشاره‌های متنی به مواعد"},
+    {"id": "parties", "name": "استخراج طرفین پرونده", "description": "یافتن خطوط حاوی مشخصات طرفین"},
+    {"id": "insights", "name": "تحلیل ساختاری اسناد", "description": "تجمیع شماره‌ها، تاریخ‌ها، طرفین و مواد"},
+    {"id": "duplicates", "name": "شناسایی فایل‌های تکراری", "description": "مقایسه هش SHA-256"},
+    {"id": "today", "name": "کارهای سررسید امروز", "description": "نمایش وظایف ثبت‌شده برای امروز"},
+    {"id": "overdue", "name": "کارهای عقب‌افتاده", "description": "نمایش وظایف با موعد گذشته"},
+    {"id": "upcoming", "name": "موعدهای آینده", "description": "نمایش موعدهای آتی"},
+    {"id": "images", "name": "فهرست تصاویر", "description": "نمایش تصاویر اسکن‌شده"},
+    {"id": "pdfs", "name": "فهرست PDFها", "description": "نمایش اسناد PDF"},
+    {"id": "ocr", "name": "فهرست اسناد OCRشده", "description": "نمایش اسناد پردازش‌شده با OCR"},
+    {"id": "export_json", "name": "خروجی JSON", "description": "ذخیره گزارش و فهرست اسناد"},
+    {"id": "export_csv", "name": "خروجی CSV", "description": "خروجی جدولی اسناد"},
+    {"id": "health", "name": "بررسی سلامت", "description": "بررسی پایگاه داده و ابزارهای OCR"},
+    {"id": "help", "name": "راهنمای امکانات", "description": "نمایش فهرست گزینه‌ها"},
+]
+
 def main() -> None:
-    parser = argparse.ArgumentParser(description="Judicex daily document scan and deadline report")
+    parser = argparse.ArgumentParser(description="Judicex daily assistant")
     parser.add_argument("--db", required=True)
     parser.add_argument("--scan", action="append", default=[], help="Directory to scan; may be repeated")
+    parser.add_argument("--action", choices=[item["id"] for item in OPTIONS], default="all")
+    parser.add_argument("--query", default="", help="Search term for --action search")
+    parser.add_argument("--output", default="", help="Export file path")
     parser.add_argument("--horizon", type=int, default=7)
+    parser.add_argument("--list-options", action="store_true")
     args = parser.parse_args()
+    if args.list_options:
+        print(json.dumps(OPTIONS, ensure_ascii=False, indent=2))
+        return
     result: dict[str, Any] = {}
     if args.scan:
         result["scan"] = scan_directories(args.db, args.scan)
-    result["report"] = daily_report(args.db, max(0, args.horizon))
+    if args.action == "scan" and not args.scan:
+        parser.error("برای action=scan حداقل یک --scan لازم است.")
+    if args.action not in {"scan", "all", "report"}:
+        result["result"] = run_action(args.db, args.action, args.query, args.output)
+    elif args.action == "report":
+        result["report"] = daily_report(args.db, max(0, args.horizon))
+    elif args.action == "all":
+        result["report"] = daily_report(args.db, max(0, args.horizon))
+        result["stats"] = run_action(args.db, "stats")
     print(json.dumps(result, ensure_ascii=False, indent=2))
 
 
